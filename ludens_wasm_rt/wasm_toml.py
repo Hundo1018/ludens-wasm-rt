@@ -70,7 +70,8 @@ def load(path: Path) -> dict:
         data = _parse(text)  # noqa: pre-3.11 fallback
     if data.get("lib") is None or "name" not in data["lib"]:
         raise SystemExit(f"{path}: missing [lib] name")
-    unknown = set(data) - {"lib", "native"}
+    # [toolchain] is read by a consumer's own scripts (wgpu-mojo build-web.sh), not by this driver.
+    unknown = set(data) - {"lib", "native", "toolchain"}
     if unknown:
         raise SystemExit(f"{path}: unknown tables: {sorted(unknown)}")
     lib = _check(path, "lib", data, KEYS)

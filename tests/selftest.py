@@ -274,6 +274,14 @@ def manifest_checks() -> None:
         (tmp / "wasm.toml").write_text('[lib]\nname = "x"\n[native]\nstatic_libs = ["a.a"]\nlink_flags = ["-lm"]\nmojo_defines = ["K=1"]\n')
         cfg = wasm_toml.load(tmp / "wasm.toml")
         check(cfg["native"] == {"static_libs": ["a.a"], "link_flags": ["-lm"], "mojo_defines": ["K=1"]}, "[native] section parsed")
+        (tmp / "wasm.toml").write_text('[lib]\nname = "x"\n[toolchain]\nllvm = "23.1.4"\n')
+        check(wasm_toml.load(tmp / "wasm.toml")["name"] == "x", "consumer-owned [toolchain] table is ignored")
+        (tmp / "wasm.toml").write_text('[lib]\nname = "x"\n[bogus_table]\nk = 1\n')
+        try:
+            wasm_toml.load(tmp / "wasm.toml")
+            check(False, "unknown table rejected")
+        except SystemExit as e:
+            check("bogus_table" in str(e), "unknown table rejected and named")
         (tmp / "wasm.toml").write_text('[lib]\nname = "x"\n[native]\nbogus = []\n')
         try:
             wasm_toml.load(tmp / "wasm.toml")
