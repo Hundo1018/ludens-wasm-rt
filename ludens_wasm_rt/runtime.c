@@ -194,6 +194,13 @@ float sinf(float x) { return host_sinf(x); }
 float cosf(float x) { return host_cosf(x); }
 #endif
 
+/* ---- wrt_sinf / wrt_cosf: the names libwasmrt_math.a exports natively, so one source calls the same
+ * symbols on both targets and gets the same musl bits. */
+float sinf(float x);
+float cosf(float x);
+float wrt_sinf(float x) { return sinf(x); }
+float wrt_cosf(float x) { return cosf(x); }
+
 /* ---- compiler-rt: 128-bit multiply (wasm64 lowers i128 `mul` to this libcall) ---- */
 
 void __multi3(unsigned long long* r, unsigned long long al, unsigned long long ah,
