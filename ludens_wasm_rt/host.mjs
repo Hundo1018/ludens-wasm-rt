@@ -92,6 +92,8 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
     },
     /** Read a UTF-8 string out of wasm memory. */
     str_out(ptr, len) { return this.str(ptr, len); },
+    /** size bytes of wasm memory (the module's mw_alloc); release with rt.free. */
+    alloc(size, align = 16) { return this.exports.mw_alloc(BigInt(size), BigInt(align)); },
     free(ptr) { this.exports.mw_free(ptr); },
     /** Throws, naming the entry point, when calling into wasm would violate the re-entry rule. */
     _entry(what) {
