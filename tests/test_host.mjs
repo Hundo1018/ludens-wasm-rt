@@ -57,4 +57,5 @@ e.call("echo_drain_run");
 check(inDrain === "allowed", `rt.call from deferred work inside drain() is allowed: ${inDrain}`);
 e.call("echo_run", 3);
 check(/inside a host import/.test(e.reentry), "outside drain() the import rule still applies");
+check(throws(() => e.call_fn(0), /call_fn\(0\) outside rt.drain\(\)/) !== null, "call_fn outside drain() is refused");
 process.exitCode = failed ? 1 : 0;

@@ -107,9 +107,16 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
       try { return table.get(BigInt(index)); } catch (e) { if (!(e instanceof TypeError)) throw e; }
       return table.get(Number(index));
     },
-    /** Call a wasm function through the indirect table (Mojo / C function pointers: a c_fn_ptr is a
-     *  table index under wasm64). Arguments and results follow wasm types: i64 / pointers are BigInt. */
+    /** Call a wasm callback through the indirect table (Mojo / C function pointers: a c_fn_ptr is a
+     *  table index under wasm64). Legal only inside rt.drain(); use rt.fn(index)(...) for a raw call
+     *  in tests. Arguments and results follow wasm types: i64 / pointers are BigInt. */
     call_fn(index, ...args) {
+      // A callback is invoked while Mojo is inside a host import that drains deferred results;
+      // from a microtask or top-level JS it would re-enter wasm uninvited.
+      if (!draining) {
+        throw new Error(`re-entry: call_fn(${index}) outside rt.drain(); table callbacks run only while ` +
+                        `Mojo is inside a host import (queue with rt.defer(), apply with rt.drain())`);
+      }
       this._entry(`call_fn(${index})`);
       return this.fn(index)(...args);
     },
