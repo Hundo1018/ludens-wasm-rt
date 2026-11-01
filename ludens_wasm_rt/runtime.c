@@ -194,6 +194,17 @@ float sinf(float x) { return host_sinf(x); }
 float cosf(float x) { return host_cosf(x); }
 #endif
 
+/* ---- compiler-rt: 128-bit multiply (wasm64 lowers i128 `mul` to this libcall) ---- */
+
+void __multi3(unsigned long long* r, unsigned long long al, unsigned long long ah,
+              unsigned long long bl, unsigned long long bh) {
+    unsigned long long a0 = al & 0xffffffffULL, a1 = al >> 32, b0 = bl & 0xffffffffULL, b1 = bl >> 32;
+    unsigned long long p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    unsigned long long mid = (p00 >> 32) + (p01 & 0xffffffffULL) + (p10 & 0xffffffffULL);
+    r[0] = (p00 & 0xffffffffULL) | (mid << 32);
+    r[1] = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32) + al * bh + ah * bl;
+}
+
 /* ---- time, abort ---- */
 
 struct timespec { long long tv_sec; long tv_nsec; };
