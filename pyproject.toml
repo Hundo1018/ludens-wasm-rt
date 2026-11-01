@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ludens-wasm-rt"
+version = "0.1.0"
+description = "wasm64 runtime, build driver and JS host shared by the ludens Mojo libraries"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+
+[project.scripts]
+ludens-wasm-build = "ludens_wasm_rt.build_wasm:main"
+
+[tool.setuptools]
+packages = ["ludens_wasm_rt"]
+
+[tool.setuptools.package-data]
+ludens_wasm_rt = ["host.mjs", "runtime.c", "retarget.py", "libc/**/*"]
