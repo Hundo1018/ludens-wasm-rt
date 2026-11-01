@@ -20,9 +20,34 @@ typedef __builtin_va_list va_list;
 #define IMPORT(name) __attribute__((import_module("env"), import_name(name)))
 #define EXPORT(name) __attribute__((export_name(name)))
 
+/* Host interface. `host_*` is the reserved import prefix: JS host.mjs supplies it, or with
+ * -DWRT_HOST_WASI (build_wasm --host wasi) these are implemented here on WASI preview 1. */
+#ifdef WRT_HOST_WASI
+typedef struct { const void* buf; unsigned int len; } wasi_ciovec;  /* wasm32 ABI layout in wasi */
+#define WASI(name) __attribute__((import_module("wasi_snapshot_preview1"), import_name(name)))
+/* WASI preview 1 pointers are 32-bit even in a wasm64 module's host view; wasmtime's memory64
+ * support takes i64 addresses only through its own wasi-libc build, so the module stages the
+ * iovec in the low 4 GiB-addressable static area and passes 32-bit offsets. */
+WASI("fd_write") int wasi_fd_write(int fd, unsigned int iovs, unsigned int iovs_len, unsigned int nwritten);
+WASI("clock_time_get") int wasi_clock_time_get(int id, unsigned long long precision, unsigned int out);
+static unsigned int wasi_scratch[4];
+void host_write(int fd, const void* p, size_t n) {
+    wasi_scratch[0] = (unsigned int)(size_t)p;
+    wasi_scratch[1] = (unsigned int)n;
+    wasi_fd_write(fd, (unsigned int)(size_t)&wasi_scratch[0], 1, (unsigned int)(size_t)&wasi_scratch[2]);
+}
+unsigned long long host_now_ns(void) {
+    unsigned long long t = 0;
+    wasi_clock_time_get(1, 1, (unsigned int)(size_t)&t);
+    return t;
+}
+#else
 IMPORT("host_write") void host_write(int fd, const void* p, size_t n);
+IMPORT("host_now_ns") unsigned long long host_now_ns(void);
+#endif
 
 /* ---- allocator ---- */
+
 
 extern unsigned char __heap_base;
 static size_t heap_top;
@@ -79,6 +104,10 @@ void* KGEN_CompilerRT_AlignedAlloc(size_t align, size_t size) {
 }
 void KGEN_CompilerRT_AlignedFree(void* p) { block_free(p); }
 
+/* JS side (host.mjs str_in) puts strings into memory through these. */
+EXPORT("mw_alloc") void* mw_alloc(size_t size, size_t align) { return KGEN_CompilerRT_AlignedAlloc(align ? align : 1, size ? size : 1); }
+EXPORT("mw_free") void mw_free(void* p) { KGEN_CompilerRT_AlignedFree(p); }
+
 void* memcpy(void* dst, const void* src, size_t n);
 void* memset(void* dst, int c, size_t n);
 
@@ -120,6 +149,16 @@ void KGEN_CompilerRT_TracyZoneEnd(long long z) {}
 long long KGEN_CompilerRT_NumPhysicalCores(void) { return 1; }
 int KGEN_CompilerRT_AsyncRT_ParallelismLevel(void) { return 1; }
 
+/* No device runtime on wasm: reaching any of these is a bug in the caller. */
+long long AsyncRT_DeviceContext_create(void* a, void* b, int c) { __builtin_trap(); }
+void AsyncRT_DeviceContext_deviceApi(void* a, long long b) { __builtin_trap(); }
+long long AsyncRT_DeviceContext_enqueueHostFunctionRange(long long a, void* b, void* c, void* d, long long e) { __builtin_trap(); }
+long long AsyncRT_DeviceContext_getAttribute(void* a, long long b, int c) { __builtin_trap(); }
+void AsyncRT_DeviceContext_release(long long a) { __builtin_trap(); }
+void AsyncRT_DeviceContext_strfree(long long a) { __builtin_trap(); }
+long long AsyncRT_DeviceContext_synchronize(long long a) { __builtin_trap(); }
+void AsyncRT_DeviceContext_retain(long long a) { __builtin_trap(); }
+
 /* ---- stdio: no files ---- */
 
 static int errno_value;
@@ -146,6 +185,28 @@ int ferror(FILE* f) { return 1; }
 int fileno(FILE* f) { return -1; }
 struct stat;
 int fstat(int fd, struct stat* st) { return -1; }
+
+/* ---- --math host (experimental): sinf / cosf are host imports, not musl ---- */
+#ifdef WRT_MATH_HOST
+IMPORT("host_sinf") float host_sinf(float x);
+IMPORT("host_cosf") float host_cosf(float x);
+float sinf(float x) { return host_sinf(x); }
+float cosf(float x) { return host_cosf(x); }
+#endif
+
+/* ---- time, abort ---- */
+
+struct timespec { long long tv_sec; long tv_nsec; };
+int clock_gettime(int clock, struct timespec* ts) {
+    unsigned long long ns = host_now_ns();
+    ts->tv_sec = (long long)(ns / 1000000000ULL);
+    ts->tv_nsec = (long)(ns % 1000000000ULL);
+    return 0;
+}
+void abort(void) {
+    host_write(2, "abort()\n", 8);
+    __builtin_trap();
+}
 
 /* ---- assert, text ---- */
 

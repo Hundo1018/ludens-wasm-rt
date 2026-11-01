@@ -45,21 +45,34 @@ def _parse(text: str) -> dict:
     return out
 
 
+NATIVE_KEYS = {"static_libs": list, "link_flags": list, "mojo_defines": list}
+
+
+def _check(path: Path, table: str, data: dict, keys: dict) -> dict:
+    out = data.get(table, {})
+    for key, typ in keys.items():
+        out.setdefault(key, typ())
+        if not isinstance(out[key], typ):
+            raise SystemExit(f"{path}: [{table}] {key} must be a {typ.__name__}")
+    unknown = set(out) - set(keys)
+    if unknown:
+        raise SystemExit(f"{path}: unknown [{table}] keys: {sorted(unknown)}")
+    return out
+
+
 def load(path: Path) -> dict:
+    """Return the [lib] table, with the optional [native] table under lib["native"]."""
     text = path.read_text()
     try:
         import tomllib
         data = tomllib.loads(text)
     except ImportError:
-        data = _parse(text)
-    lib = data.get("lib")
-    if lib is None or "name" not in lib:
+        data = _parse(text)  # noqa: pre-3.11 fallback
+    if data.get("lib") is None or "name" not in data["lib"]:
         raise SystemExit(f"{path}: missing [lib] name")
-    for key, typ in KEYS.items():
-        lib.setdefault(key, typ())
-        if not isinstance(lib[key], typ):
-            raise SystemExit(f"{path}: [lib] {key} must be a {typ.__name__}")
-    unknown = set(lib) - set(KEYS)
+    unknown = set(data) - {"lib", "native"}
     if unknown:
-        raise SystemExit(f"{path}: unknown [lib] keys: {sorted(unknown)}")
+        raise SystemExit(f"{path}: unknown tables: {sorted(unknown)}")
+    lib = _check(path, "lib", data, KEYS)
+    lib["native"] = _check(path, "native", data, NATIVE_KEYS)
     return lib

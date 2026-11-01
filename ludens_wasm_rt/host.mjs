@@ -13,10 +13,16 @@
 //  - Libraries contribute imports as `createImports(rt)`, returning { namespace: { name: fn } }.
 //    instantiate() merges them into one importObject and throws on a duplicate name.
 //  - Re-entry rule: a host import must not call back into the module (the module may be
-//    mid-allocation). rt.call() enforces it; rt.exports does not.
+//    mid-allocation), and an asynchronous result (Promise callback) must not call into it either.
+//    Async results go through rt.defer(fn) and are applied by rt.drain(), which a library's host
+//    import calls synchronously when Mojo next enters it. rt.call() / rt.call_fn() enforce the
+//    rule in debug mode (the default); rt.exports does not. Promise callbacks the runtime cannot
+//    see are not caught: wrap them with rt.when(promise, fn) to have them checked.
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+
+const nowNs = () => BigInt(Math.round(performance.now() * 1e6));
 
 function defaultWrite(fd, text) {
   if (typeof process !== "undefined" && process.stdout) (fd === 2 ? process.stderr : process.stdout).write(text);
@@ -51,11 +57,15 @@ async function compile(src, importObject) {
 
 /**
  * @param src   bytes (ArrayBuffer / Uint8Array), a Response, or a Promise of either
- * @param opts  { libs: [module | createImports fn], host: { write(fd, text) } }
+ * @param opts  { libs: [module | createImports fn], host: { write(fd, text), now() -> BigInt ns },
+ *              debug: true }
  */
-export async function instantiate(src, { libs = [], host = {} } = {}) {
+export async function instantiate(src, { libs = [], host = {}, debug = true } = {}) {
   const write = host.write ?? defaultWrite;
+  const now = host.now ?? nowNs;
   let inHost = 0;
+  let inAsync = null;  // label of the Promise continuation currently running (rt.when)
+  const deferred = [];
   const rt = {
     instance: null,
     exports: null,
@@ -68,24 +78,76 @@ export async function instantiate(src, { libs = [], host = {} } = {}) {
     /** Copy bytes into wasm memory at ptr. */
     put(ptr, data) { this.bytes(ptr, data.length).set(data); },
     encode: (text) => encoder.encode(text),
-    /** Call a wasm function through the indirect table (Mojo / C function pointers). */
-    callIndirect(index, ...args) {
-      if (inHost) throw new Error("re-entry: wasm called from inside a host import");
-      return this.exports.__indirect_function_table.get(Number(index))(...args);
+    /** The current ArrayBuffer of linear memory. Never keep it across a call into wasm. */
+    mem() { return this.memory.buffer; },
+    /** Copy a JS string into wasm memory (via the module's mw_alloc). Returns [ptr, len] as BigInt;
+     *  release with rt.free(ptr). */
+    str_in(text) {
+      const data = encoder.encode(text);
+      const ptr = this.exports.mw_alloc(BigInt(data.length || 1), 1n);
+      this.put(ptr, data);
+      return [ptr, BigInt(data.length)];
     },
-    /** Call an export; refuses while a host import is running. */
+    /** Read a UTF-8 string out of wasm memory. */
+    str_out(ptr, len) { return this.str(ptr, len); },
+    free(ptr) { this.exports.mw_free(ptr); },
+    /** Throws, naming the entry point, when calling into wasm would violate the re-entry rule. */
+    _entry(what) {
+      if (inHost) throw new Error(`re-entry: ${what} called from inside a host import`);
+      if (debug && inAsync) {
+        throw new Error(`re-entry: ${what} called from the Promise callback '${inAsync}'; ` +
+                        `queue it with rt.defer() and apply it with rt.drain()`);
+      }
+    },
+    /** The function behind a table index (table64 wants a BigInt index, table32 a Number). */
+    fn(index) {
+      const table = this.exports.__indirect_function_table;
+      try { return table.get(BigInt(index)); } catch (e) { if (!(e instanceof TypeError)) throw e; }
+      return table.get(Number(index));
+    },
+    /** Call a wasm function through the indirect table (Mojo / C function pointers: a c_fn_ptr is a
+     *  table index under wasm64). Arguments and results follow wasm types: i64 / pointers are BigInt. */
+    call_fn(index, ...args) {
+      this._entry(`call_fn(${index})`);
+      return this.fn(index)(...args);
+    },
+    /** Call an export; refuses while a host import or a tracked Promise callback is running. */
     call(name, ...args) {
-      if (inHost) throw new Error(`re-entry: ${name} called from inside a host import`);
+      this._entry(name);
       return this.exports[name](...args);
     },
+    /** Queue work that must not touch wasm now (typically an async result to be written into memory). */
+    defer(fn) { deferred.push(fn); },
+    /** Run queued work in order. A host import calls this when Mojo enters it, the one point where an
+     *  async result may be applied synchronously. Returns how many ran. */
+    drain() {
+      let ran = 0;
+      while (deferred.length) { deferred.shift()(); ran++; }
+      return ran;
+    },
+    /** promise.then(fn) with fn tracked: calling into wasm from inside it throws (debug mode). */
+    when(promise, fn, label = fn.name || "anonymous") {
+      return promise.then((value) => {
+        const before = inAsync;
+        inAsync = label;
+        try { return fn(value); } finally { inAsync = before; }
+      });
+    },
   };
+  rt.callIndirect = rt.call_fn;  // earlier name
 
   const guard = (fn) => (...args) => {
     inHost++;
     try { return fn(...args); } finally { inHost--; }
   };
   const base = {
-    env: { host_write: (fd, ptr, len) => write(Number(fd), rt.str(ptr, len)) },
+    env: {
+      host_write: (fd, ptr, len) => write(Number(fd), rt.str(ptr, len)),
+      host_now_ns: () => BigInt.asUintN(64, BigInt(now())),
+      // --math host (experimental): the host's libm instead of the vendored musl one.
+      host_sinf: (x) => Math.fround(Math.sin(x)),
+      host_cosf: (x) => Math.fround(Math.cos(x)),
+    },
   };
   const fragments = [base];
   for (const lib of libs) {

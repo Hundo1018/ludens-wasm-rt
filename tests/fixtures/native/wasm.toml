@@ -1,0 +1,7 @@
+[lib]
+name = "native_fixture"
+c_sources = ["nat.c"]
+
+[native]
+static_libs = ["build/libnat.a"]
+mojo_defines = ["FIXTURE_LINK=static"]

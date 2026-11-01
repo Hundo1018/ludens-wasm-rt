@@ -1,0 +1,3 @@
+[lib]
+name = "fnptr_fixture"
+c_sources = ["fnptr_caller.c"]

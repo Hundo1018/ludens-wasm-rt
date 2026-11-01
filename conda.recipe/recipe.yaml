@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/prefix-dev/recipe-format/main/schema.json
+#
+# ludens-wasm-rt as a noarch Python package: the build driver, the vendored musl subset, runtime.c
+# and host.mjs. The wasm64 toolchain is pinned in run requirements, so installing the package is
+# enough to build a module. Consumers add it to a wasm-only pixi feature; the default environment
+# of wgpu-mojo / miniaudio-mojo never depends on it.
+#
+# Validate against the working tree:   pixi run check-recipe
+# For a channel submission replace `path` with a git source pinned to a full commit SHA.
+context:
+  version: "0.1.0"
+  llvm_version: "23.1.4"
+
+package:
+  name: ludens-wasm-rt
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  noarch: python
+  script:
+    - python -m pip install . --no-deps --no-build-isolation -vv
+
+requirements:
+  host:
+    - python >=3.9
+    - pip
+    - setuptools >=68
+  run:
+    - python >=3.9
+    - clang ==${{ llvm_version }}
+    - lld ==${{ llvm_version }}
+    - llvm-tools ==${{ llvm_version }}
+    - nodejs >=24
+    # The Mojo compiler (mojo-compiler >=1.2.0) comes from the consumer's own environment.
+
+tests:
+  - script:
+      - ludens-wasm-build --help
+      - python -c "import ludens_wasm_rt, pathlib; p = pathlib.Path(ludens_wasm_rt.__file__).parent; assert (p / 'host.mjs').is_file() and (p / 'runtime.c').is_file() and (p / 'libc' / 'musl' / 'src' / 'math' / 'fma.c').is_file()"
+
+about:
+  homepage: https://github.com/Hundo1018/ludens-wasm-rt
+  license: Apache-2.0 AND MIT
+  license_file:
+    - LICENSE
+    - ludens_wasm_rt/libc/musl/COPYRIGHT
+  summary: Build Mojo libraries to wasm64 (LLVM retarget, minimal libc, JS host)

@@ -1,0 +1,5 @@
+[lib]
+name = "echo"
+c_sources = ["echo.c"]
+js = "echo_host.mjs"
+host_imports = ["echo_*"]
