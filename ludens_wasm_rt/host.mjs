@@ -64,6 +64,7 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
   const write = host.write ?? defaultWrite;
   const now = host.now ?? nowNs;
   let inHost = 0;
+  let draining = 0;    // >0 while rt.drain() runs: the one place a callback may call into wasm
   let inAsync = null;  // label of the Promise continuation currently running (rt.when)
   const deferred = [];
   const rt = {
@@ -84,8 +85,9 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
      *  release with rt.free(ptr). */
     str_in(text) {
       const data = encoder.encode(text);
-      const ptr = this.exports.mw_alloc(BigInt(data.length || 1), 1n);
+      const ptr = this.exports.mw_alloc(BigInt(data.length + 1), 1n);
       this.put(ptr, data);
+      this.bytes(ptr + BigInt(data.length), 1).fill(0);  // NUL after the text, for C callers
       return [ptr, BigInt(data.length)];
     },
     /** Read a UTF-8 string out of wasm memory. */
@@ -93,7 +95,7 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
     free(ptr) { this.exports.mw_free(ptr); },
     /** Throws, naming the entry point, when calling into wasm would violate the re-entry rule. */
     _entry(what) {
-      if (inHost) throw new Error(`re-entry: ${what} called from inside a host import`);
+      if (inHost && !draining) throw new Error(`re-entry: ${what} called from inside a host import`);
       if (debug && inAsync) {
         throw new Error(`re-entry: ${what} called from the Promise callback '${inAsync}'; ` +
                         `queue it with rt.defer() and apply it with rt.drain()`);
@@ -119,10 +121,12 @@ export async function instantiate(src, { libs = [], host = {}, debug = true } = 
     /** Queue work that must not touch wasm now (typically an async result to be written into memory). */
     defer(fn) { deferred.push(fn); },
     /** Run queued work in order. A host import calls this when Mojo enters it, the one point where an
-     *  async result may be applied synchronously. Returns how many ran. */
+     *  async result may be applied synchronously; deferred work may call rt.call / rt.call_fn (a C
+     *  callback through the table) here and only here. Returns how many ran. */
     drain() {
       let ran = 0;
-      while (deferred.length) { deferred.shift()(); ran++; }
+      draining++;
+      try { while (deferred.length) { deferred.shift()(); ran++; } } finally { draining--; }
       return ran;
     },
     /** promise.then(fn) with fn tracked: calling into wasm from inside it throws (debug mode). */

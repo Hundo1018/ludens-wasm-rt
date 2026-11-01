@@ -50,4 +50,11 @@ e.call("echo_drain_run");
 check(e.exports.echo_cell() === 5, "defer from a Promise callback, drained at the next import");
 const ok = e.call("echo_cell");
 check(ok === 5, "calls work again outside the callback");
+// a callback through the table is legal inside drain(), and only there
+let inDrain = null;
+e.defer(() => { try { e.call("echo_cell"); inDrain = "allowed"; } catch (err) { inDrain = err.message; } });
+e.call("echo_drain_run");
+check(inDrain === "allowed", `rt.call from deferred work inside drain() is allowed: ${inDrain}`);
+e.call("echo_run", 3);
+check(/inside a host import/.test(e.reentry), "outside drain() the import rule still applies");
 process.exitCode = failed ? 1 : 0;
