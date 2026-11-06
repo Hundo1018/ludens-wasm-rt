@@ -135,9 +135,11 @@ def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, 
         return list(pool.map(build, jobs))
 
 
-def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[str]) -> list[str]:
+def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[str], debug: str = "none") -> list[str]:
     inc = [str(lib.root / d) for lib in libs for d in lib.cfg["include"]] + [str(i) for i in includes]
     cmd = ["mojo", "build", "--target-cpu", "x86-64"]
+    if debug != "none":
+        cmd += ["--debug-level", debug]
     for d in defines:
         cmd += ["-D", d]
     for i in inc:
@@ -145,12 +147,13 @@ def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[s
     return cmd
 
 
-def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Path, cwd: Path) -> tuple[Path, Path]:
+def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Path, cwd: Path,
+                debug: str = "none") -> tuple[Path, Path]:
     ll = out_dir / (entry.stem + ".ll")
     wasm_ll = out_dir / (entry.stem + ".wasm64.ll")
     opt_ll = out_dir / (entry.stem + ".opt.bc")
     obj = out_dir / (entry.stem + ".mojo.o")
-    cmd = mojo_cmd(entry, includes, libs, [d for lib in libs for d in lib.cfg["mojo_defines"]])
+    cmd = mojo_cmd(entry, includes, libs, [d for lib in libs for d in lib.cfg["mojo_defines"]], debug)
     cmd.insert(2, "--emit")
     cmd.insert(3, "llvm")
     run([*cmd, str(entry), "-o", str(ll)], "mojo --emit llvm", cwd)
@@ -214,6 +217,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", choices=["js", "wasi"], default="js",
                     help="js: host_* are `env` imports for host.mjs; wasi: implemented on WASI preview 1")
     ap.add_argument("--target", choices=["wasm64", "native"], default="wasm64")
+    ap.add_argument("--debug", choices=["none", "line-tables", "full"], default="none",
+                    help="DWARF in the module (.debug_* sections). line-tables: addresses map to .mojo file:line and "
+                         "the code is byte-identical to a build without it. full: also variables, but it changes the "
+                         "generated code (measured), so do not compare its hashes with a release build")
     args = ap.parse_args(argv)
 
     cwd = Path.cwd()
@@ -228,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     clang = tool("clang")
     with ThreadPoolExecutor(2) as pool:
         c_future = pool.submit(c_objects, clang, libs, out.parent / "obj", cwd, args.host, args.math)
-        mojo_obj, ir = mojo_object(entry, includes, libs, out.parent, cwd)
+        mojo_obj, ir = mojo_object(entry, includes, libs, out.parent, cwd, args.debug)
         c_objs = c_future.result()
 
     # wasm-ld has no export globs: expand them against the objects' defined symbols.
@@ -253,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         shown = out
     print(f"build_wasm: {shown} ({out.stat().st_size:,} bytes, {len(flat)} exports, audits ok)")
+    if args.debug == "full":
+        print("build_wasm: --debug full changes the generated code; its hashes are not those of a release build")
     return 0
 
 
