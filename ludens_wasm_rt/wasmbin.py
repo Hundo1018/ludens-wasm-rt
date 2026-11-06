@@ -78,3 +78,23 @@ def parse(data: bytes) -> dict:
                 exports.append((name, KINDS.get(kind, "?")))
         r.pos = end
     return {"imports": imports, "exports": exports}
+
+
+def sections(data: bytes) -> list[tuple[int, str, bytes]]:
+    """Every section as (id, custom-section name or "", payload without the name for custom sections)."""
+    if data[:4] != b"\0asm":
+        raise ValueError("not a wasm module")
+    r = _Reader(data, 8)
+    out = []
+    while r.pos < len(data):
+        sec, size = r.byte(), r.u32()
+        end = r.pos + size
+        name = ""
+        start = r.pos
+        if sec == 0:
+            n = r.u32()
+            name = data[r.pos:r.pos + n].decode("utf-8", "replace")
+            start = r.pos + n
+        out.append((sec, name, data[start:end]))
+        r.pos = end
+    return out

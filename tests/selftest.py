@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ludens_wasm_rt import audit, native_math, wasm_toml, wasmbin  # noqa: E402
+from ludens_wasm_rt import audit, build_wasm, native_math, wasm_toml, wasmbin  # noqa: E402
 from wasmtime_host import Rt  # noqa: E402
 
 TESTS = ROOT / "tests"
@@ -69,6 +69,22 @@ def main() -> int:
         check(res.stdout.strip() == expected, f"hello_kernel(100): native {expected} == node {res.stdout.strip()}")
         wt = Rt(hello).call("hello_kernel", 100)
         check(str(wt) == expected, f"hello_kernel(100): native {expected} == wasmtime {wt}")
+
+        # ---- --debug: DWARF in the module; line-tables leaves the code byte-identical -------------------------
+        secs = {n or i: p for i, n, p in wasmbin.sections(hello.read_bytes())}
+        check(not any(str(k).startswith(".debug_") for k in secs), "default build carries no DWARF")
+        dbg = build("hello_dbg", "hello_kernel.mojo", "--export", "hello_kernel", "--debug", "line-tables", out="hello_dbg.wasm")
+        if dbg:
+            dsecs = {n or i: p for i, n, p in wasmbin.sections(dbg.read_bytes())}
+            check(".debug_line" in dsecs and ".debug_info" in dsecs, "--debug line-tables: .debug_line and .debug_info present")
+            check(dsecs[10] == secs[10] and dsecs[1] == secs[1], "--debug line-tables: code and type sections are byte-identical to the default build")
+            lines = subprocess.run([build_wasm.tool("llvm-dwarfdump"), "--debug-line", str(dbg)], capture_output=True, text=True).stdout
+            check("hello_kernel.mojo" in lines, "--debug line-tables: the line table names hello_kernel.mojo")
+            check(str(Rt(dbg).call("hello_kernel", 100)) == expected, "--debug line-tables: hello_kernel(100) unchanged")
+        full = build("hello_full", "hello_kernel.mojo", "--export", "hello_kernel", "--debug", "full", out="hello_full.wasm")
+        if full:
+            check(".debug_loc" in {n for _, n, _ in wasmbin.sections(full.read_bytes())}, "--debug full: variable locations present")
+            check(str(Rt(full).call("hello_kernel", 100)) == expected, "--debug full: hello_kernel(100) unchanged")
 
     # ---- A2: libc ----------------------------------------------------------------------------------------
     math_wasm = build("math", "math_kernel.mojo", "--export", "k_*")

@@ -12,7 +12,7 @@ names the maintainer, not a dependency. Consumers depend on *it*, and only from 
 
 ```
 python3 -m ludens_wasm_rt.build_wasm [--lib path/to/lib]... entry.mojo [-I dir] -o out.wasm --export 'web_*'
-    [--math musl|host] [--host js|wasi] [--target wasm64|native]
+    [--math musl|host] [--host js|wasi] [--target wasm64|native] [--debug none|line-tables|full]
 ```
 
 Pipeline: `mojo build --emit llvm --target-cpu x86-64` → `retarget.py` (wasm64 triple/datalayout, x86 attrs
@@ -24,6 +24,19 @@ Toolchain (pinned in `pixi.toml`): LLVM 23.1.4 (`clang`, `llc`, `opt`, `wasm-ld`
 version, or `call_indirect` types disagree), Node ≥ 24 (memory64 / table64), wasmtime ≥ 50 (optional).
 Feature set: `+tail-call,+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals`. relaxed-simd is
 off because FMA contraction breaks bit-identity. Mojo flag: `--target-cpu x86-64` (host IR without FMA).
+
+## Debug info
+
+`--debug line-tables` puts DWARF in the module (`.debug_info`, `.debug_line`, `.debug_str`, ...), so an address maps back
+to a `.mojo` file and line (`llvm-dwarfdump --debug-line`, `llvm-symbolizer`). It does not touch the code: the code and
+type sections are byte-identical to a build without it (checked in `tests/selftest.py`), so its hashes and behavior are
+those of the release build. The cost is size: the 1,263-byte `hello_kernel` module becomes 95,181 bytes, nearly all of it
+`.debug_str`; strip the sections for a shipped module (`llvm-strip --strip-debug`).
+
+`--debug full` adds variable locations (`.debug_loc`) but changes the generated code (`hello_kernel`: code-section hash
+`114d7d0b…` without, `a9f89a3e…` with), so do not compare its hashes with a release build. The driver says so when it is used.
+
+The `name` section (function names for profilers and traces) is always present; `--debug` is not needed for it.
 
 ## wasm.toml
 
