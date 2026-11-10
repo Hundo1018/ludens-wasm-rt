@@ -5,7 +5,7 @@ Mojo 1.2.0 has no WebAssembly target. This repo supplies the missing piece so a 
 several libraries' manifests are merged into one module, and a JS host composes imports and enforces the
 re-entry rule. LLVM (`opt` / `llc` / `wasm-ld`) does the compiling.
 
-It does not import or know any consumer (ludens-engine, wgpu-mojo, miniaudio-mojo). The `ludens-` in the name
+It does not import or know any consumer (ludens-core, wgpu-mojo, miniaudio-mojo). The `ludens-` in the name
 names the maintainer, not a dependency. Consumers depend on *it*, and only from a wasm-only pixi feature.
 
 ## Build
