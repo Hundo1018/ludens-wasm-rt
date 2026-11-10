@@ -32,6 +32,7 @@ import argparse
 import glob
 import os
 import shutil
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -71,10 +72,38 @@ def tool(name: str) -> str:
     return path
 
 
+_DIAG = re.compile(r"^(?:\S[^\n]*?): (error|warning|note|remark): ", re.M)
+ERROR_LIMIT = 20
+TAIL_CHARS = 4000
+
+
+def failure_report(output: str) -> str:
+    """What to show of a failed tool's output: its `error:` diagnostics first (each with the lines up to the next
+    diagnostic, at most ERROR_LIMIT of them), or the last TAIL_CHARS characters when it has none.
+
+    A tail alone hides the errors of a compiler that prints hundreds of warnings after them."""
+    starts = [(m.start(), m.group(1)) for m in _DIAG.finditer(output)]
+    errors = []
+    for i, (pos, kind) in enumerate(starts):
+        if kind != "error":
+            continue
+        end = len(output)
+        for nxt, nkind in starts[i + 1:]:
+            if nkind != "note":  # a note belongs to the diagnostic before it
+                end = nxt
+                break
+        errors.append(output[pos:end].rstrip())
+    if not errors:
+        return output[-TAIL_CHARS:]
+    shown = errors[:ERROR_LIMIT]
+    head = f"{len(errors)} error(s)" + (f", first {ERROR_LIMIT} shown" if len(errors) > ERROR_LIMIT else "")
+    return head + "\n\n" + "\n\n".join(shown)
+
+
 def run(cmd: list[str], what: str, cwd: Path, env: dict | None = None) -> None:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
-        sys.exit(f"build_wasm: {what} failed ({cmd[0]})\n" + (proc.stdout + proc.stderr)[-4000:])
+        sys.exit(f"build_wasm: {what} failed ({cmd[0]})\n" + failure_report(proc.stdout + proc.stderr))
 
 
 class Lib:
