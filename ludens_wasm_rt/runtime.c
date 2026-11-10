@@ -9,7 +9,7 @@
  *   - assert, errno, a minimal vsnprintf (log text only), wide-string stubs.
  * Math and string functions come from musl (compiled from emscripten's copy).
  *
- * Allocator after ludens-engine's tools/wasm/poc/shim.c: power-of-two size
+ * Allocator after ludens-core's tools/wasm/poc/shim.c: power-of-two size
  * classes over memory.grow, every block 64-byte aligned, the class stored in the
  * 64 bytes before the payload. O(1) alloc / free; memory is never returned. */
 

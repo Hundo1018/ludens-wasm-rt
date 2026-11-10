@@ -7,7 +7,7 @@ Mojo 1.2.0 cannot emit WebAssembly itself, but `mojo build --emit llvm` IR built
 for a baseline x86-64 CPU is close to target-neutral. This swaps the triple and
 datalayout, strips the x86 target-cpu / target-features attributes, and stubs
 the two x86 MXCSR intrinsics (an FTZ/DAZ guard in the stdlib). Method and
-findings: ludens-engine tools/wasm/poc (retarget.py, FINDINGS.md), 2026-11-01.
+findings: ludens-core tools/wasm/poc (retarget.py, FINDINGS.md), 2026-11-01.
 """
 
 import re
