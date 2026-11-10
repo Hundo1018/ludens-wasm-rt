@@ -222,7 +222,27 @@ def math_parity(math_wasm: Path, lib: Path) -> None:
                         + ("" if same else f" ({sum(x != y for x, y in zip(a[off:off+size], b[off:off+size]))} bytes differ)"))
 
 
+def failure_report_check() -> None:
+    """A failed compile shows its errors, not the tail of its warnings."""
+    warn = "".join(f"/src/lib.mojo:{n}:5: warning: 'unsafe_ptr' is deprecated, use 'ptr' instead\n    x.unsafe_ptr()\n    ^\n" for n in range(400))
+    err = ("/src/app.mojo:12:9: error: use of unknown declaration 'Foo'\n    var x = Foo()\n            ^~~\n"
+           "/src/app.mojo:3:1: note: did you mean 'Fob'?\n")
+    out = err + warn + "mojo: error: failed to parse the provided Mojo source module\n"
+    tail_only = out[-build_wasm.TAIL_CHARS:]
+    report = build_wasm.failure_report(out)
+    check("unknown declaration 'Foo'" not in tail_only, "the old tail-only output would have hidden the error (the case is real)")
+    check("unknown declaration 'Foo'" in report and "did you mean 'Fob'" in report and "deprecated" not in report,
+          "failure report: the error and its note are shown, the 400 warnings are not")
+    check(report.startswith("2 error(s)"), f"failure report counts the errors: {report.splitlines()[0]}")
+    plain = "ld: cannot find -lfoo\n" * 3
+    check(build_wasm.failure_report(plain) == plain, "output with no `error:` diagnostics is shown as it is")
+    many = "".join(f"/a.mojo:{n}:1: error: e{n}\n" for n in range(50))
+    r = build_wasm.failure_report(many)
+    check(r.startswith("50 error(s), first 20 shown") and "e19" in r and "e20\n" not in r + "\n", "more than 20 errors: the first 20 are shown")
+
+
 def gates() -> None:
+    failure_report_check()
     # declare audit, synthetic
     imports = [("env", "host_write", "func", None), ("env", "foo_bar", "func", None),
                ("env", "wgpuInstanceCreate", "func", None), ("env", "host_secret", "func", None)]
