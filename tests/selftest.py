@@ -120,6 +120,7 @@ def main() -> int:
         check(res.returncode == 0, f"fnptr probe {res.stderr[-300:]}")
     gates()
     parity_runner()
+    mojo_option()
 
     # ---- A6: WASI vs JS host -----------------------------------------------------------------------------
     probe_js = build("probe_js", "host_probe.mojo", "--export", "probe_*")
@@ -305,6 +306,26 @@ def gates() -> None:
         proc = driver([str(tmp / "muladd.mojo"), "-o", str(tmp / "m.wasm"), "--export", "run", "--fma-report", "3"])
         check(proc.returncode == 0 and "fma: 1 contractible mul+add pairs" in proc.stdout and " run" in proc.stdout,
               f"build prints the fma report (a * b + c: 1 pair, in `run`): {proc.stdout.strip()[-240:]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def mojo_option() -> None:
+    """--mojo: the command the driver runs as the compiler (here a wrapper that leaves a mark, then runs mojo)."""
+    tmp = Path(tempfile.mkdtemp(prefix="wrt_mojo_"))
+    try:
+        mark = tmp / "called"
+        wrapper = tmp / "my mojo"  # a space in the path: the option is split like a shell command, so it is quoted
+        wrapper.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{mark}"\nexec mojo "$@"\n')
+        wrapper.chmod(0o755)
+        proc = driver([str(TESTS / "parity_kernel.mojo"), "-o", str(tmp / "p.wasm"), "--export", "parity_*",
+                       "--mojo", f"'{wrapper}'"])
+        check(proc.returncode == 0 and mark.is_file() and "--emit llvm" in mark.read_text(),
+              f"--mojo runs the given command as the compiler (it saw: {mark.read_text().strip()[:80] if mark.is_file() else 'nothing'})")
+        proc = driver([str(TESTS / "parity_kernel.mojo"), "-o", str(tmp / "q.wasm"), "--export", "parity_*",
+                       "--mojo", str(tmp / "no_such_mojo")], expect_ok=False)
+        check(proc.returncode != 0 and "no_such_mojo" in proc.stdout + proc.stderr,
+              f"--mojo with a missing command fails, naming it: {(proc.stdout + proc.stderr).strip()[-160:]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
