@@ -25,6 +25,10 @@ version, or `call_indirect` types disagree), Node ≥ 24 (memory64 / table64), w
 Feature set: `+tail-call,+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals`. relaxed-simd is
 off because FMA contraction breaks bit-identity. Mojo flag: `--target-cpu x86-64` (host IR without FMA).
 
+The compiler is `mojo` on `PATH`, or `--mojo CMD` / `LUDENS_MOJO` (split like a shell command), e.g.
+`--mojo 'pixi run --manifest-path ../ludens-core/pixi.toml mojo'` to build with the library's pinned compiler, the one
+its precompiled packages were made with.
+
 ## Debug info
 
 `--debug line-tables` puts DWARF in the module (`.debug_info`, `.debug_line`, `.debug_str`, ...), so an address maps back

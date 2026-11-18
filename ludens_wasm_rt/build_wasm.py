@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import shlex
 import shutil
 import re
 import subprocess
@@ -164,9 +165,15 @@ def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, 
         return list(pool.map(build, jobs))
 
 
+# The Mojo compiler command: `mojo` on PATH unless --mojo / LUDENS_MOJO names another (split like a shell would, so a
+# whole command such as `pixi run --manifest-path ../lib/pixi.toml mojo` works: the consumer's pinned compiler, the one
+# its precompiled packages were made with).
+MOJO: list[str] = ["mojo"]
+
+
 def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[str], debug: str = "none") -> list[str]:
     inc = [str(lib.root / d) for lib in libs for d in lib.cfg["include"]] + [str(i) for i in includes]
-    cmd = ["mojo", "build", "--target-cpu", "x86-64"]
+    cmd = [*MOJO, "build", "--target-cpu", "x86-64"]
     if debug != "none":
         cmd += ["--debug-level", debug]
     for d in defines:
@@ -183,8 +190,8 @@ def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Pat
     opt_ll = out_dir / (entry.stem + ".opt.bc")
     obj = out_dir / (entry.stem + ".mojo.o")
     cmd = mojo_cmd(entry, includes, libs, [d for lib in libs for d in lib.cfg["mojo_defines"]], debug)
-    cmd.insert(2, "--emit")
-    cmd.insert(3, "llvm")
+    at = len(MOJO) + 1  # after `build`
+    cmd[at:at] = ["--emit", "llvm"]
     run([*cmd, str(entry), "-o", str(ll)], "mojo --emit llvm", cwd)
     run([sys.executable, "-I", str(HERE / "retarget.py"), str(ll), str(wasm_ll)], "retarget", cwd)
     names = "-non-global-value-max-name-size=1000000"  # Mojo's mangled local names are long
@@ -207,7 +214,8 @@ def build_native(entry: Path, includes: list[Path], libs: list[Lib], out: Path, 
     # The native link wants the system toolchain: a conda env that ships its own `ld` (the wasm
     # feature pulls binutils in with clang) has an older glibc sysroot that cannot link Mojo's runtime.
     env = dict(os.environ, PATH=os.pathsep.join(["/usr/bin", "/bin", os.environ.get("PATH", "")]))
-    cmd[0] = shutil.which("mojo") or "mojo"
+    if len(MOJO) == 1:
+        cmd[0] = shutil.which(MOJO[0]) or MOJO[0]
     run([*cmd, str(entry), "-o", str(out)], "mojo build (native)", cwd, env)
     print(f"build_wasm: {out} (native, {out.stat().st_size:,} bytes)")
     return 0
@@ -237,6 +245,9 @@ def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str) -> N
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("entry")
+    ap.add_argument("--mojo", default=os.environ.get("LUDENS_MOJO", "mojo"), metavar="CMD",
+                    help="the Mojo compiler command (default: LUDENS_MOJO, else `mojo` on PATH); split like a shell "
+                         "command, e.g. --mojo 'pixi run --manifest-path ../lib/pixi.toml mojo'")
     ap.add_argument("--fma-report", type=int, default=0, metavar="N",
                     help="also list the N functions with the most fusable arithmetic (audit.fma_report)")
     ap.add_argument("--lib", action="append", default=[], help="directory holding a wasm.toml (repeatable)")
@@ -253,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                          "the code is byte-identical to a build without it. full: also variables, but it changes the "
                          "generated code (measured), so do not compare its hashes with a release build")
     args = ap.parse_args(argv)
+    MOJO[:] = shlex.split(args.mojo)
 
     cwd = Path.cwd()
     out = Path(args.out).resolve()
