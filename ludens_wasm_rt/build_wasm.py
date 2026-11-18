@@ -237,6 +237,8 @@ def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str) -> N
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("entry")
+    ap.add_argument("--fma-report", type=int, default=0, metavar="N",
+                    help="also list the N functions with the most fusable arithmetic (audit.fma_report)")
     ap.add_argument("--lib", action="append", default=[], help="directory holding a wasm.toml (repeatable)")
     ap.add_argument("-I", dest="includes", action="append", default=[], help="extra Mojo import path")
     ap.add_argument("-o", dest="out", required=True)
@@ -288,6 +290,13 @@ def main(argv: list[str] | None = None) -> int:
         shown = out.relative_to(cwd)
     except ValueError:
         shown = out
+    fr = audit.fma_report(ir.read_text())
+    print(f"build_wasm: fma: {fr['pairs']} contractible mul+add pairs (fused by a native FMA build, never by wasm64), "
+          f"{fr['fmuladd']} llvm.fmuladd, {fr['fma']} llvm.fma, in {len(fr['functions'])} functions")
+    if args.fma_report:
+        top = sorted(fr["functions"].items(), key=lambda kv: -sum(kv[1]))
+        for fn, (pairs, fmuladd, fma) in top[:args.fma_report]:
+            print(f"  {pairs:6} {fmuladd:4} {fma:4}  {fn[:140]}")
     print(f"build_wasm: {shown} ({out.stat().st_size:,} bytes, {len(flat)} exports, audits ok)")
     if args.debug == "full":
         print("build_wasm: --debug full changes the generated code; its hashes are not those of a release build")

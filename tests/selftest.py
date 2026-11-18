@@ -259,6 +259,19 @@ def gates() -> None:
     flagged = {p.split(":")[0] for p in sp}
     check(flagged == {"bad_vec", "bad_sret", "bad_agg"}, f"signature audit flags v128 / sret / aggregate only: {sorted(flagged)}")
 
+    # fma report: a contract mul feeding a contract add is a pair; an add of a non-mul, a mul without contract and a
+    # mul in another function are not
+    fir = ("define float @one(float %0, float %1, float %2) {\n"
+           "  %4 = fmul contract float %0, %1\n  %5 = fadd contract float %4, %2\n  ret float %5\n}\n"
+           "define float @none(float %0, float %1, float %2) {\n"
+           "  %4 = fadd contract float %0, %1\n  %5 = fmul float %0, %1\n  %6 = fadd contract float %5, %2\n"
+           "  %7 = fadd contract float %x, %2\n  ret float %7\n}\n"
+           "define double @calls(double %0) {\n  %2 = call contract double @llvm.fma.f64(double %0, double %0, double %0)\n"
+           "  %3 = call double @llvm.fmuladd.f64(double %0, double %0, double %2)\n  ret double %3\n}\n")
+    fr = audit.fma_report(fir)
+    check(fr["pairs"] == 1 and fr["fma"] == 1 and fr["fmuladd"] == 1 and set(fr["functions"]) == {"one", "calls"},
+          f"fma report: 1 pair (in `one`), 1 llvm.fma, 1 llvm.fmuladd: {fr}")
+
     # end to end: undeclared import fails the real build and is named
     tmp = Path(tempfile.mkdtemp(prefix="wrt_gate_"))
     try:
@@ -284,6 +297,13 @@ def gates() -> None:
             "    external_call[\"bad_ok\", NoneType](x, x)\n\n\ndef main():\n    pass\n")
         proc = driver([str(scalar), "--lib", str(lib), "-o", str(tmp / "s.wasm"), "--export", "run"])
         check(proc.returncode == 0, f"a declared scalar import (ptr/len as i64) passes: {proc.stderr.strip()[-200:]}")
+
+        (tmp / "muladd.mojo").write_text(
+            "@export\ndef run(a: Float32, b: Float32, c: Float32) abi(\"C\") -> Float32:\n    return a * b + c\n\n\n"
+            "def main():\n    pass\n")
+        proc = driver([str(tmp / "muladd.mojo"), "-o", str(tmp / "m.wasm"), "--export", "run", "--fma-report", "3"])
+        check(proc.returncode == 0 and "fma: 1 contractible mul+add pairs" in proc.stdout and " run" in proc.stdout,
+              f"build prints the fma report (a * b + c: 1 pair, in `run`): {proc.stdout.strip()[-240:]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

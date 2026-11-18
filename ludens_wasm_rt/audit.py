@@ -9,6 +9,16 @@ signature audit    each `declare` in the retargeted Mojo IR that ends up as a li
                    and Mojo lowers a by-value struct of <= 16 bytes containing a float to a
                    vector register.  ptr + len as two i64 is fine; a > 16 byte by-value struct
                    becomes a byval pointer, also fine.
+fma report         (not a gate) how much floating-point arithmetic the backend may fuse. Mojo marks
+                   `a * b + c` as `fmul contract` + `fadd contract`; a backend for a CPU with FMA fuses
+                   such a pair into one rounding, wasm64 has no FMA instruction and never does. So
+                   every contractible pair is a place where a native FMA build and the wasm64 build
+                   can differ in the last bit. `llvm.fma` (an explicit `std.math.fma`) is fused on
+                   both, and `llvm.fmuladd` is fused or not at the backend's choice.
+                   The rule the ludens consumers follow: the reference build (the one golden outputs
+                   and wasm parity compare against) is built for a CPU without FMA (x86-64 baseline),
+                   so its pairs are never fused, like wasm64's. `fma_report` measures how much that
+                   rule matters for a module; `build_wasm --fma-report` prints it per function.
 """
 
 from __future__ import annotations
@@ -98,3 +108,53 @@ def signature_audit(ir_text: str, import_names: set[str]) -> list[str]:
                 problems.append(f"{name}: parameter `{p}` is `{ty}`, not i32/i64/f32/f64/ptr "
                                 f"(vectors and by-value aggregates do not cross the JS boundary)")
     return problems
+
+
+_DEFINE = re.compile(r'^define\s.*?@(?P<name>"[^"]+"|[^\s(]+)\(')
+_FMUL = re.compile(r"^\s*(?P<res>%[\w.\"]+) = fmul contract ")
+_FADD = re.compile(r"^\s*%[\w.\"]+ = f(?:add|sub) contract (?P<ops>.*)$")
+
+
+def fma_report(ir_text: str) -> dict:
+    """Count, in LLVM IR text: `pairs`, contract fadd / fsub with a contract fmul result as an operand (fusable by
+    the backend); `fmuladd`, llvm.fmuladd call sites; `fma`, llvm.fma call sites. `functions` maps each function
+    with any of them to (pairs, fmuladd, fma)."""
+    total = {"pairs": 0, "fmuladd": 0, "fma": 0}
+    functions: dict[str, tuple[int, int, int]] = {}
+    name = None
+    muls: set[str] = set()
+    counts = [0, 0, 0]
+
+    def close():
+        if name is not None and any(counts):
+            functions[name.strip('"')] = tuple(counts)
+
+    for line in ir_text.splitlines():
+        m = _DEFINE.match(line)
+        if m:
+            close()
+            name, muls, counts = m.group("name"), set(), [0, 0, 0]
+            continue
+        if name is None:
+            continue
+        if line.startswith("}"):
+            close()
+            name = None
+            continue
+        m = _FMUL.match(line)
+        if m:
+            muls.add(m.group("res"))
+            continue
+        m = _FADD.match(line)
+        if m and any(op.strip().split()[-1] in muls for op in m.group("ops").split(",") if op.strip()):
+            counts[0] += 1
+            total["pairs"] += 1
+        if "@llvm.fmuladd." in line and "call" in line:
+            counts[1] += 1
+            total["fmuladd"] += 1
+        if "@llvm.fma." in line and "call" in line:
+            counts[2] += 1
+            total["fma"] += 1
+    close()
+    total["functions"] = functions
+    return total
