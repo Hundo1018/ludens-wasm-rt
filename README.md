@@ -102,6 +102,19 @@ must not call into wasm from inside a host import or from a Promise callback. As
 and are applied by `rt.drain()` when Mojo next enters a host import. In debug mode (default) `rt.call` / `rt.call_fn`
 throw, naming the offender; wrap Promise callbacks with `rt.when(promise, fn)` to have them checked.
 
+## Python host (`wasmtime_host.py`)
+
+The same modules under wasmtime-py (memory64), for gates and tools that run wasm from Python:
+
+```python
+from ludens_wasm_rt.wasmtime_host import Rt
+rt = Rt(Path("build/x.wasm"))              # host="js": env.host_* defined in Python; host="wasi": WASI preview 1
+p = rt.alloc(16); rt.write(p, data); rt.call("my_export", p, 16); rt.read(p, 16)
+```
+
+Needs the `wasmtime` package (only importing this module does). `tests/wasmtime_host.py` re-exports it for consumers
+that still put `tests/` on `sys.path`.
+
 ## Test
 
 ```

@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ludens_wasm_rt import audit, build_wasm, native_math, wasm_toml, wasmbin  # noqa: E402
-from wasmtime_host import Rt  # noqa: E402
+from ludens_wasm_rt.wasmtime_host import Rt  # noqa: E402
 
 TESTS = ROOT / "tests"
 BUILD = ROOT / "build" / "selftest"
