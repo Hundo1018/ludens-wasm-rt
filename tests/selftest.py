@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ludens_wasm_rt import audit, build_wasm, native_math, wasm_toml, wasmbin  # noqa: E402
+from ludens_wasm_rt import audit, build_wasm, native_math, parity, wasm_toml, wasmbin  # noqa: E402
 from ludens_wasm_rt.wasmtime_host import Rt  # noqa: E402
 
 TESTS = ROOT / "tests"
@@ -119,6 +119,7 @@ def main() -> int:
         print(res.stdout.rstrip())
         check(res.returncode == 0, f"fnptr probe {res.stderr[-300:]}")
     gates()
+    parity_runner()
 
     # ---- A6: WASI vs JS host -----------------------------------------------------------------------------
     probe_js = build("probe_js", "host_probe.mojo", "--export", "probe_*")
@@ -306,6 +307,24 @@ def gates() -> None:
               f"build prints the fma report (a * b + c: 1 pair, in `run`): {proc.stdout.strip()[-240:]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def parity_runner() -> None:
+    """ludens_wasm_rt.parity: the same u64 results through node and wasmtime; a failing export raises; compare()."""
+    wasm = build("parity", "parity_kernel.mojo", "--export", "parity_*")
+    if wasm is None:
+        return
+    want = [21, 2**64 - 1, 7]
+    for host in ("node", "wasmtime"):
+        got = parity.wasm_u64s(wasm, "parity_probe", 3, [7], host=host)
+        check(got == want, f"parity runner on {host}: parity_probe(7) -> {got}")
+        try:
+            parity.wasm_u64s(wasm, "parity_probe", 3, [-1], host=host)
+            check(False, f"parity runner on {host}: a non-zero return raises")
+        except RuntimeError as e:
+            check("parity_probe" in str(e), f"parity runner on {host}: a non-zero return raises, naming the export ({e})")
+    check(parity.compare(["a", "b", "c"], want, want, "probe") and not parity.compare(["a", "b", "c"], want, [21, 0, 7], "probe"),
+          "compare: equal lists pass, one different value fails")
 
 
 def native_target() -> None:

@@ -115,6 +115,12 @@ p = rt.alloc(16); rt.write(p, data); rt.call("my_export", p, 16); rt.read(p, 16)
 Needs the `wasmtime` package (only importing this module does). `tests/wasmtime_host.py` re-exports it for consumers
 that still put `tests/` on `sys.path`.
 
+## Native-vs-wasm64 parity (`parity.py`)
+
+A parity export writes N u64 results through a pointer and returns 0; `parity.wasm_u64s(wasm, export, n, args,
+host="node"|"wasmtime")` runs it and `parity.compare(names, native, wasm)` prints the comparison. The scenes stay in
+the consumer. `python -m ludens_wasm_rt.parity build/x.wasm export N [args...]` prints the values.
+
 ## Test
 
 ```
