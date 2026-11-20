@@ -114,6 +114,8 @@ void* memset(void* dst, int c, size_t n);
 void* malloc(size_t n) { return block_alloc(n ? n : 1); }
 void free(void* p) { block_free(p); }
 void* calloc(size_t count, size_t size) {
+    /* count * size must not wrap: a wrapped product would hand back a small block for a large request. */
+    if (size && count > (size_t)-1 / size) return 0;
     size_t n = count * size;
     void* p = block_alloc(n ? n : 1);
     memset(p, 0, n);

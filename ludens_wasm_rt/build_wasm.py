@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import os
 import shlex
 import shutil
@@ -151,10 +152,16 @@ def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, 
     jobs += [(musl / "src" / f"{rel}.c", musl_flags, [], "") for rel in MUSL
              if not (math == "host" and rel in MATH_HOST_SKIP)]
 
+    compiler = subprocess.run([clang, "--version"], capture_output=True, text=True).stdout
+
     def build(job):
         src, flags, deps, tag = job
-        # Key the cache by directory of origin so lib files of the same name do not collide.
-        obj = obj_dir / (src.parent.name + "__" + src.stem + tag + ".o")
+        # The object's name carries a hash of everything that decides its content except the file contents (those are
+        # covered by the mtime test below): the compiler, every flag and define, and the source's full path. Before,
+        # the name was the parent directory and the stem, so a changed c_defines or flag linked the old object, and two
+        # libraries with a same-named directory and file shared one.
+        key = hashlib.sha256("\0".join([compiler, *base, *flags, str(src.resolve())]).encode()).hexdigest()[:12]
+        obj = obj_dir / (src.parent.name + "__" + src.stem + tag + "-" + key + ".o")
         newest = max(p.stat().st_mtime for p in [src, *deps])
         if not (obj.exists() and obj.stat().st_mtime >= newest):
             run([*base, *flags, "-c", str(src), "-o", str(obj)], f"compiling {src.name}", cwd)
@@ -169,6 +176,34 @@ def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, 
 # whole command such as `pixi run --manifest-path ../lib/pixi.toml mojo` works: the consumer's pinned compiler, the one
 # its precompiled packages were made with).
 MOJO: list[str] = ["mojo"]
+
+
+# The Mojo release this driver is known to retarget correctly. retarget.py rewrites the compiler's textual IR and the
+# runtime provides KGEN / AsyncRT symbols whose signatures are Mojo's private ones, so a new minor release can break
+# the build silently. Anything else stops the build unless --allow-mojo-version (or LUDENS_ALLOW_MOJO_VERSION=1) is given.
+SUPPORTED_MOJO = (1, 2)
+
+
+def parse_mojo_version(text: str) -> tuple[int, int, int] | None:
+    """(major, minor, patch) from `mojo --version` output such as 'Mojo 1.2.0 (2016d0cd)', or None."""
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def check_mojo_version(allow: bool) -> str:
+    """Stop unless the compiler is the supported release; returns the version line for the build log."""
+    proc = subprocess.run([*MOJO, "--version"], capture_output=True, text=True)
+    text = (proc.stdout + proc.stderr).strip()
+    version = parse_mojo_version(text)
+    if version is None or version[:2] != SUPPORTED_MOJO:
+        found = text.splitlines()[0] if text else f"no output from `{' '.join(MOJO)} --version`"
+        msg = (f"build_wasm: this driver supports Mojo {SUPPORTED_MOJO[0]}.{SUPPORTED_MOJO[1]}.x; found: {found}. "
+               "The IR retarget and the runtime's KGEN symbols depend on the compiler release. "
+               "Pass --allow-mojo-version to build anyway.")
+        if not allow:
+            sys.exit(msg)
+        print(msg.replace("build_wasm:", "build_wasm: warning:").replace(" Pass --allow-mojo-version to build anyway.", ""), file=sys.stderr)
+    return text.splitlines()[0] if text else "mojo (unknown version)"
 
 
 def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[str], debug: str = "none") -> list[str]:
@@ -259,12 +294,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", choices=["js", "wasi"], default="js",
                     help="js: host_* are `env` imports for host.mjs; wasi: implemented on WASI preview 1")
     ap.add_argument("--target", choices=["wasm64", "native"], default="wasm64")
+    ap.add_argument("--allow-mojo-version", action="store_true",
+                    help="build with a Mojo release other than the supported one (a warning instead of an error)")
     ap.add_argument("--debug", choices=["none", "line-tables", "full"], default="none",
                     help="DWARF in the module (.debug_* sections). line-tables: addresses map to .mojo file:line and "
                          "the code is byte-identical to a build without it. full: also variables, but it changes the "
                          "generated code (measured), so do not compare its hashes with a release build")
     args = ap.parse_args(argv)
     MOJO[:] = shlex.split(args.mojo)
+    print(f"build_wasm: {check_mojo_version(args.allow_mojo_version or os.environ.get('LUDENS_ALLOW_MOJO_VERSION') == '1')}")
 
     cwd = Path.cwd()
     out = Path(args.out).resolve()
