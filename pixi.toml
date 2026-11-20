@@ -13,11 +13,16 @@ lld = "23.1.4.*"
 llvm-tools = "23.1.4.*"
 nodejs = "24.*"
 wasmtime-py = ">=50"
-mojo-compiler = ">=1.2.0,<2"
+mojo-compiler = ">=1.2.0,<1.3"
 
 [pypi-dependencies]
 ludens-wasm-rt = { path = ".", editable = true }
 
 [tasks]
 selftest = "python3 tests/selftest.py"
+# The checks that need clang / wasm-ld / node but no Mojo: what CI runs on every push.
+test-cache = "python3 tests/test_object_cache.py"
+test-guards = "python3 tests/test_guards.py"
+test-runtime-c = "python3 tests/test_runtime_c.py"
+test-unit = { depends-on = ["test-guards", "test-cache", "test-runtime-c"] }
 check-recipe = "rattler-build build --recipe conda.recipe/recipe.yaml --output-dir build/conda -c conda-forge"

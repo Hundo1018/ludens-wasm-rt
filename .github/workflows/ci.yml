@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# ludens-wasm-rt is the build base of four repositories and had no CI. Two jobs: the checks that need no Mojo (fast),
+# and the selftest (builds the fixtures with the real driver and runs them under node, wasmtime and natively).
+jobs:
+  unit:
+    name: gates, object cache, runtime.c
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          cache: true
+          locked: true
+      - name: Version guard, signature audit fails closed, object cache key, calloc overflow
+        run: pixi run test-unit
+
+  selftest:
+    name: selftest (fixtures on node, wasmtime and native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          cache: true
+          locked: true
+      - name: selftest
+        run: pixi run selftest

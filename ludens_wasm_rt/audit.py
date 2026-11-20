@@ -32,6 +32,7 @@ MATH_HOST_IMPORTS = {"host_sinf", "host_cosf"}
 WASI_IMPORTS = {"fd_write", "clock_time_get"}
 SCALARS = {"i1", "i8", "i16", "i32", "i64", "float", "double", "ptr"}
 
+_DECLARE_NAME = re.compile(r'^declare\s.*?@("[^"]+"|[^\s(]+)\(')
 _DECLARE = re.compile(r"^declare\s+(?P<head>.*?)@(?P<name>[^\s(]+)\((?P<params>.*)\)[^)]*$")
 
 
@@ -90,7 +91,14 @@ def signature_audit(ir_text: str, import_names: set[str]) -> list[str]:
         if not line.startswith("declare "):
             continue
         m = _DECLARE.match(line)
-        if not m or m.group("name").strip('"') not in import_names:
+        if not m:
+            # A declaration this parser does not understand must not pass unchecked: if it declares an import, say so.
+            loose = _DECLARE_NAME.match(line)
+            if loose and loose.group(1).strip('"') in import_names:
+                problems.append(f"{loose.group(1).strip(chr(34))}: the `declare` line is not in a form the signature "
+                                f"audit can read, so its signature is unchecked: {line.strip()[:160]}")
+            continue
+        if m.group("name").strip('"') not in import_names:
             continue
         name = m.group("name").strip('"')
         head = m.group("head")
