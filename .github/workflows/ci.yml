@@ -31,3 +31,5 @@ jobs:
           locked: true
       - name: selftest
         run: pixi run selftest
+      - name: threads build (shared memory, node Workers)
+        run: pixi run test-threads
