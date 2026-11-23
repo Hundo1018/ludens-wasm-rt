@@ -19,6 +19,9 @@ fma report         (not a gate) how much floating-point arithmetic the backend m
                    and wasm parity compare against) is built for a CPU without FMA (x86-64 baseline),
                    so its pairs are never fused, like wasm64's. `fma_report` measures how much that
                    rule matters for a module; `build_wasm --fma-report` prints it per function.
+memory audit       a default build exports its memory and imports none. A `--threads` build imports
+                   exactly one memory, `env.memory`, shared and 64-bit, so several instances can run on
+                   it; any other memory import fails either way.
 """
 
 from __future__ import annotations
@@ -58,6 +61,29 @@ def declare_audit(imports: list[tuple], libs: dict[str, list[str]], allowed_runt
         elif not any(fnmatch.fnmatchcase(name, pat) for pats in libs.values() for pat in pats):
             problems.append(f"import env.{name}: undefined symbol not covered by the runtime or any library's "
                             f"host_imports (libraries: {sorted(libs) or 'none'})")
+    return problems
+
+
+MEMORY_SHARED, MEMORY_64 = 0x02, 0x04
+THREADS_MEMORY = ("env", "memory")
+
+
+def memory_audit(memory_imports: dict[tuple[str, str], int], threads: bool) -> list[str]:
+    """memory_imports: wasmbin.parse()["memory_imports"]. A threads build must import exactly env.memory, shared
+    and memory64; any other build must import no memory."""
+    problems = []
+    for (mod, name), flags in sorted(memory_imports.items()):
+        if not threads:
+            problems.append(f"import {mod}.{name}: the module imports a memory; only a --threads build may")
+        elif (mod, name) != THREADS_MEMORY:
+            problems.append(f"import {mod}.{name}: a --threads build imports its memory as env.memory only")
+        else:
+            if not flags & MEMORY_SHARED:
+                problems.append("import env.memory: not shared (a --threads build needs --shared-memory)")
+            if not flags & MEMORY_64:
+                problems.append("import env.memory: not a 64-bit memory (wasm64 needs memory64)")
+    if threads and THREADS_MEMORY not in memory_imports:
+        problems.append("a --threads build must import its memory as env.memory")
     return problems
 
 

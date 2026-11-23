@@ -12,7 +12,7 @@ names the maintainer, not a dependency. Consumers depend on *it*, and only from 
 
 ```
 python3 -m ludens_wasm_rt.build_wasm [--lib path/to/lib]... entry.mojo [-I dir] -o out.wasm --export 'web_*'
-    [--math musl|host] [--host js|wasi] [--target wasm64|native] [--debug none|line-tables|full]
+    [--math musl|host] [--host js|wasi] [--target wasm64|native] [--debug none|line-tables|full] [--threads]
 ```
 
 Pipeline: `mojo build --emit llvm --target-cpu x86-64` → `retarget.py` (wasm64 triple/datalayout, x86 attrs
@@ -41,6 +41,56 @@ those of the release build. The cost is size: the 1,263-byte `hello_kernel` modu
 `114d7d0b…` without, `a9f89a3e…` with), so do not compare its hashes with a release build. The driver says so when it is used.
 
 The `name` section (function names for profilers and traces) is always present; `--debug` is not needed for it.
+
+## Threads (`--threads`, shared memory)
+
+`--threads` builds a module that several instances can run at once on one shared memory, one instance per Worker
+(the same module, one memory, N instances; there is no `pthread_create` and the module starts no threads itself).
+It is opt-in; a build without it is byte-identical to one made before the flag existed. What changes:
+
+* `llc` gets `+atomics`, every C object (libraries, musl, `runtime.c`) `-matomics`; the flag is part of the object
+  cache key, so threads and default objects never mix.
+* `wasm-ld --import-memory --shared-memory --max-memory=4294967296 --export=__stack_pointer --export=__heap_base`
+  instead of `--export-memory`: the module **imports** `env.memory` (shared, memory64, at most 65536 pages) and exports
+  no memory.
+* The audit requires exactly that import (shared and 64-bit flags set), `__stack_pointer` among the exports, and no
+  exported memory; a default build still fails on any imported memory.
+* `runtime.c`'s allocator (`malloc` / `free` / `mw_alloc` / `mw_free` and the Mojo runtime's aligned alloc) is
+  serialized by one spin lock, compiled only under `__wasm_atomics__`. Nothing else in the runtime is made
+  thread-safe (`errno` and stdio are shared), so `--threads --host wasi` is refused, as is `--target native`.
+
+The host creates the memory and passes it to every instance; `initial` must be at least the module's declared
+minimum (17 pages for `tests/threads_kernel.mojo`; it grows with the module's stack and data) and `maximum` at most
+65536:
+
+```js
+const memory = new WebAssembly.Memory({ initial: 64n, maximum: 65536n, shared: true, address: 'i64' });
+// node 24 also accepts `index: 'i64'` for the 64-bit key; try `address` first, then `index`
+const env = { memory, host_write, host_now_ns };
+const main = new WebAssembly.Instance(module, { env }).exports;   // the first instance initializes the data segments
+const STACK = 1n << 20n;
+const sp = main.mw_alloc(STACK, 16n) + STACK;                      // a stack grows down: pass its top
+// in a Worker (module and memory are sent with postMessage / workerData):
+const x = new WebAssembly.Instance(module, { env }).exports;
+x.__stack_pointer.value = sp;                                      // before the first call into this instance
+```
+
+Every instance after the first must set `exports.__stack_pointer.value` to the top of its own stack region
+(allocated with `mw_alloc`, 16-byte aligned) before calling anything, or it runs on the first instance's stack. The
+modules built so far have no thread-local storage (`tests/test_threads.py` checks there is no `__wasm_init_tls`); a C
+library that uses `_Thread_local` would also need `__wasm_init_tls` called per instance, which this build does not
+support yet.
+
+In a browser, `SharedArrayBuffer` (and so a shared `WebAssembly.Memory`) needs cross-origin isolation: serve the page
+with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (check
+`crossOriginIsolated`). The main thread may not `Atomics.wait`, so it must spin (or poll) for the Workers, or run its
+share of the work loop itself. `host.mjs` and `wasmtime_host.py` read `exports.memory` and do not instantiate threads
+builds yet; instantiate them as above.
+
+`pixi run test-threads` builds `tests/threads_kernel.mojo` with `--threads` and runs it (`tests/threads_run.mjs`) on
+the main instance alone, on 1 Worker and on 2 Workers sharing the memory: every value is bit-identical to the
+single-instance run, and the allocator's live bytes come back to where they were (each item allocates and frees a
+`List`). With the lock removed the 2-Worker run differs and the live bytes drift (checked by hand).
 
 ## wasm.toml
 
@@ -91,7 +141,9 @@ a native reference build and the wasm64 build come from one manifest.
    most one scalar. `v128`, `sret` and by-value aggregates fail (JS cannot receive v128, and Mojo lowers a ≤16-byte
    by-value struct containing a float to vector registers; `ptr + len` as two `i64` and >16-byte `byval` pointers
    are fine).
-3. required exports present.
+3. **memory audit**: a default build imports no memory; a `--threads` build imports exactly `env.memory`, shared and
+   64-bit.
+4. required exports present (`memory` for a default build; `__stack_pointer`, no `memory`, for `--threads`).
 
 ## JS host (`host.mjs`)
 
@@ -133,7 +185,8 @@ pixi run selftest
 
 Builds the fixtures in `tests/` with the real driver and checks them under node, wasmtime and natively: hello kernel,
 1e6-sample bit parity of `sinf` / `cosf` / `fmaf` / `fma` between wasm (node, wasmtime) and native, host.mjs and
-re-entry, fnptr probe, both audits, the WASI host, and `--target native`.
+re-entry, fnptr probe, both audits, the WASI host, and `--target native`. `pixi run test-threads` checks the
+`--threads` build on node Workers (see Threads); `pixi run test-unit` the checks that need no Mojo.
 
 ## Packaging
 

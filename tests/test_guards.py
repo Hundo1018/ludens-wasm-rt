@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Build-gate behaviour that needs neither Mojo nor a toolchain: the Mojo version guard and the signature audit's
-handling of a `declare` line it cannot parse.
+"""Build-gate behaviour that needs neither Mojo nor a toolchain: the Mojo version guard, the signature audit's
+handling of a `declare` line it cannot parse, and the memory audit / option checks of --threads.
 
     pixi run test-guards"""
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 from pathlib import Path
 
@@ -59,6 +61,21 @@ odd = 'declare i32 @net_poll(i64 noundef, <4 x float> noundef'
 problems = audit.signature_audit(odd, {"net_poll"})
 check(len(problems) == 1 and "net_poll" in problems[0] and "unchecked" in problems[0], "an unparseable declare of an import is reported, not skipped")
 check(audit.signature_audit(odd, {"other_import"}) == [], "an unparseable declare of something that is not an import is still ignored")
+
+# --- the memory audit: only a --threads build imports a memory, and only a shared memory64 env.memory -------------
+ma = audit.memory_audit
+shared64 = {("env", "memory"): 1 | audit.MEMORY_SHARED | audit.MEMORY_64}
+check(ma({}, threads=False) == [], "default build: no memory import passes")
+check(len(ma(shared64, threads=False)) == 1, "default build: an imported memory is rejected")
+check(ma(shared64, threads=True) == [], "--threads: a shared memory64 env.memory passes")
+check(len(ma({}, threads=True)) == 1, "--threads: no memory import is rejected")
+check(len(ma({("env", "memory"): 1 | audit.MEMORY_64}, threads=True)) == 1, "--threads: an unshared memory is rejected")
+check(len(ma({("env", "memory"): 1 | audit.MEMORY_SHARED}, threads=True)) == 1, "--threads: a 32-bit memory is rejected")
+check(len(ma({("other", "mem"): 7}, threads=True)) == 2, "--threads: a memory under another name is rejected")
+for combo in (["--target", "native"], ["--host", "wasi"]):
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        msg = exits(lambda: build_wasm.main(["x.mojo", "-o", "x.wasm", "--threads", *combo]))
+    check(msg is not None and "--threads" in err.getvalue(), f"--threads {' '.join(combo)} is refused before building")
 
 print(f"test_guards: {'FAIL' if failures else 'PASS'}")
 sys.exit(1 if failures else 0)
