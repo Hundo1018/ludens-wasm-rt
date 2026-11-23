@@ -24,5 +24,7 @@ selftest = "python3 tests/selftest.py"
 test-cache = "python3 tests/test_object_cache.py"
 test-guards = "python3 tests/test_guards.py"
 test-runtime-c = "python3 tests/test_runtime_c.py"
+# --threads: builds a Mojo fixture and runs it on node Workers sharing one memory (needs Mojo; CI's selftest job).
+test-threads = "python3 tests/test_threads.py"
 test-unit = { depends-on = ["test-guards", "test-cache", "test-runtime-c"] }
 check-recipe = "rattler-build build --recipe conda.recipe/recipe.yaml --output-dir build/conda -c conda-forge"

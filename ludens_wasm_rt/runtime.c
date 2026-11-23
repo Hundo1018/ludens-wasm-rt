@@ -69,7 +69,19 @@ static void* bump(size_t n) {
 typedef struct Hdr { size_t cls; struct Hdr* next; } Hdr;
 static Hdr* bins[48];
 
+/* A threads build (-matomics, shared memory) can call the allocator from several instances at once:
+   one spin lock around the bins and the bump pointer. Without atomics these are empty. */
+#if defined(__wasm_atomics__)
+static int rt_lock;
+static void rt_acquire(void) { while (__atomic_exchange_n(&rt_lock, 1, __ATOMIC_ACQUIRE)) {} }
+static void rt_release(void) { __atomic_store_n(&rt_lock, 0, __ATOMIC_RELEASE); }
+#else
+static void rt_acquire(void) {}
+static void rt_release(void) {}
+#endif
+
 static void* block_alloc(size_t size) {
+    rt_acquire();
     int c = 4;
     while (((size_t)1 << c) < size) c++;
     size_t sz = (size_t)1 << c;
@@ -85,15 +97,18 @@ static void* block_alloc(size_t size) {
     h->cls = (size_t)c;
     live_bytes += sz;
     if (live_bytes > peak_bytes) peak_bytes = live_bytes;
+    rt_release();
     return h + 1;
 }
 
 static void block_free(void* p) {
     if (!p) return;
+    rt_acquire();
     Hdr* h = (Hdr*)p - 1;
     live_bytes -= (size_t)1 << h->cls;
     h->next = bins[h->cls];
     bins[h->cls] = h;
+    rt_release();
 }
 
 static size_t block_size(void* p) { return (size_t)1 << (((Hdr*)p - 1)->cls); }

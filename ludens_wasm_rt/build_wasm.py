@@ -3,7 +3,7 @@
 
     python3 -m ludens_wasm_rt.build_wasm --lib path/to/lib [--lib other] \\
         entry.mojo -I extra/mojo/include -o build/wasm/app.wasm --export 'web_*' \\
-        [--math musl|host] [--host js|wasi] [--target wasm64|native]
+        [--math musl|host] [--host js|wasi] [--target wasm64|native] [--threads]
 
 Each --lib directory holds a wasm.toml (see wasm_toml.py). Mojo 1.2.0 has no
 WebAssembly target, so:
@@ -18,6 +18,10 @@ WebAssembly target, so:
   6. gates (audit.py): every import is the runtime's or a library's declared host_import, every
      library import signature is scalar, and memory / __indirect_function_table / mw_alloc /
      mw_free are exported.
+
+`--threads` builds a shared-memory module instead: llc +atomics, C -matomics, and wasm-ld imports a shared
+memory64 `env.memory` (max 4 GiB) and exports __stack_pointer / __heap_base, so one module can be instantiated once per
+Worker on one memory. The audit then requires that import and no exported memory. See README "Threads".
 
 `--target native` builds the same entry with `mojo build` against each lib's [native] section
 (static_libs, link_flags, mojo_defines) instead.
@@ -64,6 +68,12 @@ C_FEATURES = ["-mbulk-memory", "-mnontrapping-fptoint", "-msign-ext", "-mmutable
 
 
 REQUIRED_EXPORTS = ["memory", "__indirect_function_table", "mw_alloc", "mw_free"]
+# --threads: the memory is imported (shared), and __stack_pointer is exported so each extra instance gets its own stack.
+THREADS_REQUIRED_EXPORTS = ["__indirect_function_table", "mw_alloc", "mw_free", "__stack_pointer"]
+THREADS_LLC_ATTRS = ",+atomics"
+THREADS_C_FEATURES = ["-matomics"]
+# --max-memory of a threads build: a shared memory must declare a maximum. 4 GiB = 65536 pages.
+THREADS_MAX_MEMORY = 4294967296
 MATH_HOST_SKIP = {"math/sinf", "math/cosf"}
 
 
@@ -126,9 +136,13 @@ class Lib:
         return [p for p in out if p.name not in set(self.cfg["c_exclude"])]
 
 
-def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, math: str) -> list[Path]:
+def c_objects(clang: str, libs: list[Lib], obj_dir: Path, cwd: Path, host: str, math: str,
+              threads: bool = False) -> list[Path]:
+    # -matomics is part of `base`, so it is part of every object's cache key: a threads object is never linked into a
+    # default build or the other way round. Every object needs it: wasm-ld --shared-memory refuses one without atomics.
+    features = C_FEATURES + (THREADS_C_FEATURES if threads else [])
     base = [clang, "--target=wasm64-unknown-emscripten", "-nostdlibinc", f"-idirafter{LIBC / 'sysroot' / 'include'}",
-            "-O2", "-ffp-contract=off", *C_FEATURES, "-w"]
+            "-O2", "-ffp-contract=off", *features, "-w"]
     jobs: list[tuple[Path, list[str], list[Path], str]] = []
     for lib in libs:
         sources = lib.c_sources()
@@ -219,7 +233,7 @@ def mojo_cmd(entry: Path, includes: list[Path], libs: list[Lib], defines: list[s
 
 
 def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Path, cwd: Path,
-                debug: str = "none") -> tuple[Path, Path]:
+                debug: str = "none", threads: bool = False) -> tuple[Path, Path]:
     ll = out_dir / (entry.stem + ".ll")
     wasm_ll = out_dir / (entry.stem + ".wasm64.ll")
     opt_ll = out_dir / (entry.stem + ".opt.bc")
@@ -231,7 +245,8 @@ def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Pat
     run([sys.executable, "-I", str(HERE / "retarget.py"), str(ll), str(wasm_ll)], "retarget", cwd)
     names = "-non-global-value-max-name-size=1000000"  # Mojo's mangled local names are long
     run([tool("opt"), names, "-O3", str(wasm_ll), "-o", str(opt_ll)], "opt -O3", cwd)
-    run([tool("llc"), names, "-O3", "-filetype=obj", f"-mattr={LLC_ATTRS}", str(opt_ll), "-o", str(obj)], "llc", cwd)
+    attrs = LLC_ATTRS + (THREADS_LLC_ATTRS if threads else "")
+    run([tool("llc"), names, "-O3", "-filetype=obj", f"-mattr={attrs}", str(opt_ll), "-o", str(obj)], "llc", cwd)
     return obj, wasm_ll
 
 
@@ -256,7 +271,7 @@ def build_native(entry: Path, includes: list[Path], libs: list[Lib], out: Path, 
     return 0
 
 
-def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str) -> None:
+def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str, threads: bool = False) -> None:
     data = wasmbin.parse(wasm.read_bytes())
     allowed = set(audit.RUNTIME_IMPORTS)
     if math == "host":
@@ -264,7 +279,10 @@ def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str) -> N
     if host == "wasi":
         allowed -= audit.RUNTIME_IMPORTS
     patterns = {lib.name: lib.cfg["host_imports"] for lib in libs}
-    problems = audit.declare_audit(data["imports"], patterns, allowed, wasi=host == "wasi")
+    # memory imports are judged by the memory audit alone (accepted only as a --threads build's shared env.memory)
+    problems = audit.memory_audit(data["memory_imports"], threads)
+    problems += audit.declare_audit([i for i in data["imports"] if i[2] != "memory"], patterns, allowed,
+                                    wasi=host == "wasi")
     lib_imports = {name for mod, name, kind, _ in data["imports"]
                    if mod == "env" and not name.startswith("host_") and kind == "func"}
     problems += audit.signature_audit(ir.read_text(), lib_imports)
@@ -272,7 +290,10 @@ def run_audits(wasm: Path, ir: Path, libs: list[Lib], host: str, math: str) -> N
         if sig and "v128" in sig[0] + sig[1]:
             problems.append(f"{mod}.{name}: v128 in the wasm signature {sig}")
     exported = {n for n, _ in data["exports"]}
-    problems += [f"module does not export `{n}`" for n in REQUIRED_EXPORTS if n not in exported]
+    required = THREADS_REQUIRED_EXPORTS if threads else REQUIRED_EXPORTS
+    problems += [f"module does not export `{n}`" for n in required if n not in exported]
+    if threads and "memory" in exported:
+        problems.append("a --threads build imports its memory and must not export one")
     if problems:
         sys.exit("build_wasm: audit failed:\n  " + "\n  ".join(problems))
 
@@ -300,7 +321,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="DWARF in the module (.debug_* sections). line-tables: addresses map to .mojo file:line and "
                          "the code is byte-identical to a build without it. full: also variables, but it changes the "
                          "generated code (measured), so do not compare its hashes with a release build")
+    ap.add_argument("--threads", action="store_true",
+                    help="shared-memory build: atomics on, the memory is imported as a shared memory64 `env.memory` "
+                         "(max 4 GiB) and __stack_pointer / __heap_base are exported, so several instances (one per "
+                         "Worker) can run on one memory. The host creates the memory; see README")
     args = ap.parse_args(argv)
+    if args.threads and args.target == "native":
+        ap.error("--threads is a wasm64 option; --target native has no shared wasm memory")
+    if args.threads and args.host == "wasi":
+        ap.error("--threads with --host wasi is not supported (the WASI host_write stages its iovec in one static "
+                 "buffer, which concurrent instances would race on)")
     MOJO[:] = shlex.split(args.mojo)
     print(f"build_wasm: {check_mojo_version(args.allow_mojo_version or os.environ.get('LUDENS_ALLOW_MOJO_VERSION') == '1')}")
 
@@ -315,8 +345,8 @@ def main(argv: list[str] | None = None) -> int:
 
     clang = tool("clang")
     with ThreadPoolExecutor(2) as pool:
-        c_future = pool.submit(c_objects, clang, libs, out.parent / "obj", cwd, args.host, args.math)
-        mojo_obj, ir = mojo_object(entry, includes, libs, out.parent, cwd, args.debug)
+        c_future = pool.submit(c_objects, clang, libs, out.parent / "obj", cwd, args.host, args.math, args.threads)
+        mojo_obj, ir = mojo_object(entry, includes, libs, out.parent, cwd, args.debug, args.threads)
         c_objs = c_future.result()
 
     # wasm-ld has no export globs: expand them against the objects' defined symbols.
@@ -331,11 +361,16 @@ def main(argv: list[str] | None = None) -> int:
             flat.append(f"--export={e}")
     # --allow-undefined turns unresolved symbols into `env` imports; run_audits then names every one
     # that neither the runtime nor a library claims.
-    run([tool("wasm-ld"), "-mwasm64", "--no-entry", "--export-memory", "--export-table", "--allow-undefined",
+    if args.threads:
+        memory = ["--import-memory", "--shared-memory", f"--max-memory={THREADS_MAX_MEMORY}",
+                  "--export=__stack_pointer", "--export=__heap_base"]
+    else:
+        memory = ["--export-memory"]
+    run([tool("wasm-ld"), "-mwasm64", "--no-entry", *memory, "--export-table", "--allow-undefined",
          "--export=mw_alloc", "--export=mw_free", "--gc-sections", "-O2",
          "--stack-first", "-z", "stack-size=1048576", *flat,
          str(mojo_obj), *map(str, c_objs), "-o", str(out)], "wasm-ld", cwd)
-    run_audits(out, ir, libs, args.host, args.math)
+    run_audits(out, ir, libs, args.host, args.math, args.threads)
     try:
         shown = out.relative_to(cwd)
     except ValueError:
@@ -347,7 +382,8 @@ def main(argv: list[str] | None = None) -> int:
         top = sorted(fr["functions"].items(), key=lambda kv: -sum(kv[1]))
         for fn, (pairs, fmuladd, fma) in top[:args.fma_report]:
             print(f"  {pairs:6} {fmuladd:4} {fma:4}  {fn[:140]}")
-    print(f"build_wasm: {shown} ({out.stat().st_size:,} bytes, {len(flat)} exports, audits ok)")
+    print(f"build_wasm: {shown} ({out.stat().st_size:,} bytes, {len(flat)} exports, audits ok"
+          + (", threads: imports a shared env.memory)" if args.threads else ")"))
     if args.debug == "full":
         print("build_wasm: --debug full changes the generated code; its hashes are not those of a release build")
     return 0

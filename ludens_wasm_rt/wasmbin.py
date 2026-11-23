@@ -30,23 +30,28 @@ class _Reader:
         self.pos += n
         return s
 
-    def limits(self) -> None:
+    def limits(self) -> int:
+        """Skip a limits record; returns its flags (1 has-max, 2 shared, 4 64-bit index)."""
         flags = self.u32()
         self.u32()
         if flags & 1:
             self.u32()
+        return flags
 
 
 def parse(data: bytes) -> dict:
-    """Return {"imports": [(module, name, kind, sig|None)], "exports": [(name, kind)]}.
+    """Return {"imports": [(module, name, kind, sig|None)], "exports": [(name, kind)],
+    "memory_imports": {(module, name): limits flags}}.
 
-    sig is (params, results) of valtype names for function imports."""
+    sig is (params, results) of valtype names for function imports. Limits flags: 1 has a maximum,
+    2 shared, 4 64-bit addresses (memory64)."""
     if data[:4] != b"\0asm":
         raise ValueError("not a wasm module")
     r = _Reader(data, 8)
     types: list[tuple[list[str], list[str]]] = []
     imports: list[tuple] = []
     exports: list[tuple] = []
+    memory_imports: dict[tuple[str, str], int] = {}
     while r.pos < len(data):
         sec, size = r.byte(), r.u32()
         end = r.pos + size
@@ -65,7 +70,7 @@ def parse(data: bytes) -> dict:
                 elif kind == 1:
                     r.byte(); r.limits()
                 elif kind == 2:
-                    r.limits()
+                    memory_imports[(mod, name)] = r.limits()
                 elif kind == 3:
                     r.byte(); r.byte()
                 else:
@@ -77,7 +82,7 @@ def parse(data: bytes) -> dict:
                 r.u32()
                 exports.append((name, KINDS.get(kind, "?")))
         r.pos = end
-    return {"imports": imports, "exports": exports}
+    return {"imports": imports, "exports": exports, "memory_imports": memory_imports}
 
 
 def sections(data: bytes) -> list[tuple[int, str, bytes]]:
