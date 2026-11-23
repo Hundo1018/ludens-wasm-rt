@@ -22,7 +22,9 @@ removed, MXCSR intrinsics stubbed) → `opt -O3` → `llc` → `clang` for every
 
 Toolchain (pinned in `pixi.toml`): LLVM 23.1.4 (`clang`, `llc`, `opt`, `wasm-ld`, `llvm-nm` must share a major
 version, or `call_indirect` types disagree), Node ≥ 24 (memory64 / table64), wasmtime ≥ 50 (optional).
-Feature set: `+tail-call,+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals`. relaxed-simd is
+Feature set: `+tail-call,+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals`, given to both `opt`
+and `llc` (`-mattr`; retarget.py strips the IR's own target-features, so `opt` vectorizes only with it), and
+`-msimd128` plus the matching `-m` flags to every C object. relaxed-simd is
 off because FMA contraction breaks bit-identity. Mojo flag: `--target-cpu x86-64` (host IR without FMA).
 
 The compiler is `mojo` on `PATH`, or `--mojo CMD` / `LUDENS_MOJO` (split like a shell command), e.g.

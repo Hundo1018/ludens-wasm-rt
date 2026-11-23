@@ -62,8 +62,12 @@ MUSL = [
     "string/strcmp", "string/strncmp", "string/strncpy", "string/strcpy", "string/strcasecmp",
     "string/wcslen", "ctype/tolower",
 ]
+# The wasm feature set of the whole pipeline: opt and llc both get LLC_ATTRS (opt's -mattr is what its vectorizers
+# cost against: retarget.py strips the IR's own target-features, so without it opt -O3 plans for a target without
+# simd128), and every C object gets C_FEATURES (clang's -msimd128 enables autovectorization of musl / runtime.c).
+# C_FEATURES is part of each object's cache key, so a change here rebuilds the cached objects.
 LLC_ATTRS = "+tail-call,+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals"
-C_FEATURES = ["-mbulk-memory", "-mnontrapping-fptoint", "-msign-ext", "-mmutable-globals"]
+C_FEATURES = ["-msimd128", "-mbulk-memory", "-mnontrapping-fptoint", "-msign-ext", "-mmutable-globals"]
 
 
 
@@ -244,8 +248,8 @@ def mojo_object(entry: Path, includes: list[Path], libs: list[Lib], out_dir: Pat
     run([*cmd, str(entry), "-o", str(ll)], "mojo --emit llvm", cwd)
     run([sys.executable, "-I", str(HERE / "retarget.py"), str(ll), str(wasm_ll)], "retarget", cwd)
     names = "-non-global-value-max-name-size=1000000"  # Mojo's mangled local names are long
-    run([tool("opt"), names, "-O3", str(wasm_ll), "-o", str(opt_ll)], "opt -O3", cwd)
     attrs = LLC_ATTRS + (THREADS_LLC_ATTRS if threads else "")
+    run([tool("opt"), names, "-O3", f"-mattr={attrs}", str(wasm_ll), "-o", str(opt_ll)], "opt -O3", cwd)
     run([tool("llc"), names, "-O3", "-filetype=obj", f"-mattr={attrs}", str(opt_ll), "-o", str(obj)], "llc", cwd)
     return obj, wasm_ll
 
